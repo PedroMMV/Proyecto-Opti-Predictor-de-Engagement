@@ -1,0 +1,17 @@
+# Example environment variables
+# Copy this file to .env and fill in your values
+
+# Streamlit Configuration
+STREAMLIT_SERVER_PORT=8501
+STREAMLIT_SERVER_HEADLESS=true
+
+# Data Paths
+DATA_RAW_PATH=data/raw
+DATA_PROCESSED_PATH=data/processed
+
+# Model Configuration
+MODEL_RANDOM_STATE=42
+MODEL_TEST_SIZE=0.2
+
+# Logging
+LOG_LEVEL=INFO
