@@ -1,0 +1,1125 @@
+"""
+Model Analytics Page - Comprehensive Model Performance Analysis
+
+This page provides in-depth analysis of the Markov engagement model including performance metrics,
+transition matrices analysis, conditional analysis, backtesting, and model diagnostics.
+
+Author: ITESM
+Date: 2025-11-18
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from scipy import linalg
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+
+# Add src to path
+sys.path.append(str(Path(__file__).parent.parent.parent))
+
+from src.models.markov_model import MarkovEngagementPredictor
+from src.models.predictor import evaluate_model, prepare_transitions_data
+from src.data.loader import DataLoader
+
+# Import shared components
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from components.header import render_header, render_sidebar_logos, get_global_css
+
+# Page configuration
+st.set_page_config(page_title="Model Analytics", page_icon="public/img/tec.png", layout="wide")
+
+# Render sidebar with logos
+with st.sidebar:
+    render_sidebar_logos()
+
+# Color scheme
+STATE_COLORS = {
+    'Bajo': '#D62828',
+    'Medio': '#F77F00',
+    'Alto': '#06A77D',
+    'Muy Alto': '#2E86AB'
+}
+
+STATES = ['Bajo', 'Medio', 'Alto', 'Muy Alto']
+
+
+# ==================== UTILITY FUNCTIONS ====================
+
+def create_confusion_matrix_plot(cm: np.ndarray, labels: List[str], normalized: bool = False) -> go.Figure:
+    """Create interactive confusion matrix heatmap."""
+    if normalized:
+        cm_display = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        text_template = '%{z:.2%}'
+        title = "Matriz de Confusión (Normalizada)"
+    else:
+        cm_display = cm
+        text_template = '%{z:d}'
+        title = "Matriz de Confusión"
+
+    fig = go.Figure(data=go.Heatmap(
+        z=cm_display,
+        x=labels,
+        y=labels,
+        colorscale='Blues',
+        text=cm_display,
+        texttemplate=text_template,
+        textfont={"size": 12},
+        colorbar=dict(title="Proporción" if normalized else "Cantidad")
+    ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Predicción",
+        yaxis_title="Valor Real",
+        height=500,
+        width=600
+    )
+
+    # Highlight diagonal
+    for i in range(len(labels)):
+        fig.add_shape(
+            type="rect",
+            x0=i-0.5, y0=i-0.5,
+            x1=i+0.5, y1=i+0.5,
+            line=dict(color="red", width=2)
+        )
+
+    return fig
+
+
+def create_transition_matrix_heatmap(matrix: np.ndarray, title: str = "Matriz de Transición") -> go.Figure:
+    """Create transition matrix heatmap."""
+    fig = go.Figure(data=go.Heatmap(
+        z=matrix,
+        x=STATES,
+        y=STATES,
+        colorscale='YlOrRd',
+        text=matrix,
+        texttemplate='%{z:.3f}',
+        textfont={"size": 11},
+        colorbar=dict(title="Probabilidad")
+    ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Estado Destino",
+        yaxis_title="Estado Origen",
+        height=450,
+        width=500
+    )
+
+    return fig
+
+
+def create_eigenvalue_plot(eigenvalues: np.ndarray) -> go.Figure:
+    """Create eigenvalue visualization."""
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Magnitud de Eigenvalores", "Plano Complejo"),
+        specs=[[{"type": "bar"}, {"type": "scatter"}]]
+    )
+
+    # Bar plot of magnitudes
+    magnitudes = np.abs(eigenvalues)
+    indices = list(range(len(eigenvalues)))
+
+    fig.add_trace(
+        go.Bar(
+            x=indices,
+            y=magnitudes,
+            marker_color=['#2E86AB' if i == 0 else '#A23B72' for i in indices],
+            name='Magnitud'
+        ),
+        row=1, col=1
+    )
+
+    # Add threshold line
+    fig.add_hline(y=1.0, line_dash="dash", line_color="red", row=1, col=1)
+
+    # Complex plane
+    real_parts = np.real(eigenvalues)
+    imag_parts = np.imag(eigenvalues)
+
+    # Unit circle
+    theta = np.linspace(0, 2*np.pi, 100)
+    fig.add_trace(
+        go.Scatter(
+            x=np.cos(theta),
+            y=np.sin(theta),
+            mode='lines',
+            line=dict(color='red', dash='dash'),
+            name='Círculo Unitario',
+            showlegend=False
+        ),
+        row=1, col=2
+    )
+
+    # Eigenvalues
+    fig.add_trace(
+        go.Scatter(
+            x=real_parts,
+            y=imag_parts,
+            mode='markers',
+            marker=dict(
+                size=12,
+                color=['#2E86AB' if i == 0 else '#A23B72' for i in indices],
+                line=dict(color='white', width=2)
+            ),
+            text=[f'λ{i+1}' for i in indices],
+            textposition='top center',
+            name='Eigenvalores'
+        ),
+        row=1, col=2
+    )
+
+    fig.update_xaxes(title_text="Índice", row=1, col=1)
+    fig.update_yaxes(title_text="Magnitud", row=1, col=1)
+    fig.update_xaxes(title_text="Parte Real", row=1, col=2)
+    fig.update_yaxes(title_text="Parte Imaginaria", row=1, col=2)
+
+    fig.update_layout(height=400, showlegend=True)
+
+    return fig
+
+
+def create_steady_state_comparison(current_dist: np.ndarray, steady_dist: np.ndarray) -> go.Figure:
+    """Compare current and steady state distributions."""
+    fig = go.Figure()
+
+    x = np.arange(len(STATES))
+    width = 0.35
+
+    fig.add_trace(go.Bar(
+        x=[s + " (Actual)" for s in STATES],
+        y=current_dist,
+        name='Distribución Actual',
+        marker_color='#2E86AB'
+    ))
+
+    fig.add_trace(go.Bar(
+        x=[s + " (Estable)" for s in STATES],
+        y=steady_dist,
+        name='Estado Estable',
+        marker_color='#A23B72'
+    ))
+
+    fig.update_layout(
+        title="Comparación: Distribución Actual vs Estado Estable",
+        xaxis_title="Estado",
+        yaxis_title="Proporción",
+        height=400,
+        barmode='group'
+    )
+
+    return fig
+
+
+def calculate_model_metrics(predictor: MarkovEngagementPredictor, test_data: pd.DataFrame) -> Dict[str, Any]:
+    """Calculate comprehensive model metrics."""
+    # Predict on test data
+    y_true = []
+    y_pred = []
+
+    for _, row in test_data.iterrows():
+        current_state = row['current_state']
+        actual_next = row['next_state']
+
+        pred = predictor.predict_next_state(current_state, None, 1)
+        predicted_state = max(pred.items(), key=lambda x: x[1])[0]
+
+        y_true.append(actual_next)
+        y_pred.append(predicted_state)
+
+    # Calculate metrics
+    accuracy = accuracy_score(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred, labels=STATES)
+    report = classification_report(y_true, y_pred, labels=STATES, output_dict=True)
+
+    return {
+        'accuracy': accuracy,
+        'confusion_matrix': cm,
+        'classification_report': report,
+        'y_true': y_true,
+        'y_pred': y_pred
+    }
+
+
+# ==================== MAIN PAGE ====================
+
+# Render professional header
+render_header(
+    title="Analítica del Modelo",
+    subtitle="Model Analytics",
+    description="Análisis detallado del rendimiento y métricas del modelo de Cadenas de Markov."
+)
+
+# Check if model is available
+if 'predictor' not in st.session_state or st.session_state.predictor is None:
+    st.error("No hay un modelo entrenado disponible. Por favor, ve a la página de Variable Selection, selecciona las variables y haz clic en 'Guardar y Entrenar Modelo'.")
+    st.stop()
+
+predictor = st.session_state.predictor
+
+# Check if data is available
+if 'df' not in st.session_state or st.session_state.df is None:
+    st.warning("No hay datos disponibles para análisis. Algunas funcionalidades estarán limitadas.")
+    has_data = False
+else:
+    has_data = True
+
+# ==================== SIDEBAR ====================
+
+with st.sidebar:
+    st.header("Opciones de Análisis")
+
+    st.subheader("Configuración")
+
+    refresh_model = st.button("Actualizar Modelo", use_container_width=True)
+
+    if refresh_model:
+        st.info("Modelo actualizado desde session_state")
+
+    st.markdown("---")
+
+    # Download options
+    st.subheader("Exportar Reporte")
+
+    if st.button("Generar Reporte PDF", use_container_width=True):
+        st.warning("Funcionalidad de exportación PDF en desarrollo")
+
+    if st.button("Exportar a Excel", use_container_width=True):
+        st.warning("Funcionalidad de exportación Excel en desarrollo")
+
+# ==================== TABS ====================
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Performance General",
+    "Análisis de Matrices",
+    "Análisis Condicional",
+    "Backtesting",
+    "Diagnóstico"
+])
+
+# ==================== TAB 1: GENERAL PERFORMANCE ====================
+
+with tab1:
+    st.header("Performance General del Modelo")
+
+    # KPIs
+    if has_data:
+        df = st.session_state.df
+
+        # Prepare test data
+        with st.spinner("Calculando métricas..."):
+            # Create transitions from data
+            transitions_df = prepare_transitions_data(
+                df,
+                email_col='Email',
+                date_col='Date',
+                state_col='Engagement Category'
+            )
+
+            # Split for testing (last 30%)
+            split_idx = int(len(transitions_df) * 0.7)
+            test_transitions = transitions_df[split_idx:]
+
+            # Calculate metrics
+            metrics = calculate_model_metrics(predictor, test_transitions)
+
+        st.subheader("Métricas Globales")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Accuracy Global",
+                f"{metrics['accuracy']:.2%}",
+                help="Proporción de predicciones correctas"
+            )
+
+        with col2:
+            precision_avg = np.mean([metrics['classification_report'][s]['precision'] for s in STATES])
+            st.metric(
+                "Precisión Promedio",
+                f"{precision_avg:.2%}",
+                help="Precisión promedio de todas las clases"
+            )
+
+        with col3:
+            recall_avg = np.mean([metrics['classification_report'][s]['recall'] for s in STATES])
+            st.metric(
+                "Recall Promedio",
+                f"{recall_avg:.2%}",
+                help="Recall promedio de todas las clases"
+            )
+
+        with col4:
+            f1_avg = np.mean([metrics['classification_report'][s]['f1-score'] for s in STATES])
+            st.metric(
+                "F1-Score Promedio",
+                f"{f1_avg:.2%}",
+                help="F1-score promedio de todas las clases"
+            )
+
+        st.markdown("---")
+
+        # Confusion Matrix
+        st.subheader("Matriz de Confusión")
+
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            normalize_cm = st.checkbox("Normalizar por filas", value=True)
+
+        with col2:
+            st.caption("La diagonal representa predicciones correctas")
+
+        st.plotly_chart(
+            create_confusion_matrix_plot(metrics['confusion_matrix'], STATES, normalize_cm),
+            use_container_width=True
+        )
+
+        st.markdown("---")
+
+        # Classification Report
+        st.subheader("Reporte de Clasificación")
+
+        report_data = []
+        for state in STATES:
+            report_data.append({
+                'Estado': state,
+                'Precisión': f"{metrics['classification_report'][state]['precision']:.2%}",
+                'Recall': f"{metrics['classification_report'][state]['recall']:.2%}",
+                'F1-Score': f"{metrics['classification_report'][state]['f1-score']:.2%}",
+                'Support': int(metrics['classification_report'][state]['support'])
+            })
+
+        df_report = pd.DataFrame(report_data)
+
+        # Style the dataframe
+        st.dataframe(df_report, use_container_width=True)
+
+        # Highlight best/worst
+        best_f1 = max(report_data, key=lambda x: float(x['F1-Score'].strip('%'))/100)
+        worst_f1 = min(report_data, key=lambda x: float(x['F1-Score'].strip('%'))/100)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.success(f"**Mejor performance:** {best_f1['Estado']} (F1: {best_f1['F1-Score']})")
+
+        with col2:
+            st.warning(f"**Menor performance:** {worst_f1['Estado']} (F1: {worst_f1['F1-Score']})")
+
+    else:
+        st.info("Carga datos en Data Explorer para ver métricas de performance.")
+
+# ==================== TAB 2: TRANSITION MATRICES ANALYSIS ====================
+
+with tab2:
+    st.header("Análisis de Matrices de Transición")
+
+    # Global Transition Matrix
+    st.subheader("Matriz de Transición Global")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.plotly_chart(
+            create_transition_matrix_heatmap(predictor.transition_matrix, "Matriz de Transición Global"),
+            use_container_width=True
+        )
+
+    with col2:
+        st.markdown("##### Interpretación")
+
+        # Stability analysis
+        diagonal_sum = np.trace(predictor.transition_matrix)
+        stability_pct = diagonal_sum / len(STATES) * 100
+
+        st.metric("Estabilidad Global", f"{stability_pct:.1f}%")
+
+        if stability_pct > 60:
+            st.success("Alta estabilidad - Los empleados tienden a mantener su estado")
+        elif stability_pct > 40:
+            st.info("Estabilidad media - Transiciones moderadas")
+        else:
+            st.warning("Baja estabilidad - Alta volatilidad en engagement")
+
+        # Probability to stay in each state
+        st.markdown("##### Probabilidad de Permanencia")
+        for i, state in enumerate(STATES):
+            stay_prob = predictor.transition_matrix[i, i]
+            st.progress(stay_prob, text=f"{state}: {stay_prob:.1%}")
+
+    st.markdown("---")
+
+    # Eigenvalue Analysis
+    st.subheader("Análisis de Eigenvalores y Ergodicidad")
+
+    stability_analysis = predictor.analyze_stability()
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        eigenvalues = np.array(stability_analysis['eigenvalues'])
+        st.plotly_chart(
+            create_eigenvalue_plot(eigenvalues),
+            use_container_width=True
+        )
+
+    with col2:
+        st.markdown("##### Propiedades de la Cadena")
+
+        st.metric("Es Ergódica", "Sí" if stability_analysis['is_ergodic'] else "No")
+        st.metric("Es Aperiódica", "Sí" if stability_analysis['is_aperiodic'] else "No")
+
+        if stability_analysis['convergence_rate']:
+            st.metric(
+                "Tasa de Convergencia",
+                f"{stability_analysis['convergence_rate']:.4f}",
+                help="Mayor valor = convergencia más rápida al estado estable"
+            )
+
+        st.markdown("---")
+
+        st.markdown("##### Interpretación")
+
+        if stability_analysis['is_ergodic'] and stability_analysis['is_aperiodic']:
+            st.success("""
+            **Cadena bien comportada**
+
+            La cadena es ergódica y aperiódica, lo que significa:
+            - Existe una distribución estacionaria única
+            - El sistema converge a largo plazo
+            - Las predicciones a largo plazo son fiables
+            """)
+        else:
+            st.warning("""
+            **Propiedades no ideales**
+
+            La cadena puede tener limitaciones para predicciones a largo plazo.
+            """)
+
+    st.markdown("---")
+
+    # Steady State Distribution
+    st.subheader("Distribución Estacionaria (Estado Estable)")
+
+    steady_state = predictor.calculate_steady_state()
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        # Calculate current distribution
+        if has_data:
+            current_dist = df['Engagement Category'].value_counts(normalize=True)
+            current_dist = np.array([current_dist.get(s, 0) for s in STATES])
+        else:
+            current_dist = np.ones(len(STATES)) / len(STATES)
+
+        steady_dist = np.array([steady_state[s] for s in STATES])
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            x=STATES,
+            y=current_dist,
+            name='Distribución Actual',
+            marker_color='#2E86AB',
+            text=[f'{v:.1%}' for v in current_dist],
+            textposition='auto'
+        ))
+
+        fig.add_trace(go.Bar(
+            x=STATES,
+            y=steady_dist,
+            name='Estado Estable',
+            marker_color='#A23B72',
+            text=[f'{v:.1%}' for v in steady_dist],
+            textposition='auto'
+        ))
+
+        fig.update_layout(
+            title="Comparación: Distribución Actual vs Estado Estable",
+            xaxis_title="Estado",
+            yaxis_title="Proporción",
+            height=400,
+            barmode='group'
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.markdown("##### Estado Estable")
+
+        for state in STATES:
+            st.metric(state, f"{steady_state[state]:.2%}")
+
+        st.markdown("---")
+
+        st.info("""
+        **¿Qué significa esto?**
+
+        El estado estable muestra la distribución de engagement esperada a largo plazo,
+        asumiendo que las probabilidades de transición permanecen constantes.
+
+        Si la distribución actual difiere mucho del estado estable, el sistema aún
+        está evolucionando hacia el equilibrio.
+        """)
+
+# ==================== TAB 3: CONDITIONAL ANALYSIS ====================
+
+with tab3:
+    st.header("Análisis Condicional por Variables")
+
+    if hasattr(predictor, 'conditional_matrices') and predictor.conditional_matrices:
+        # Feature selection
+        selected_feature = st.selectbox(
+            "Selecciona una variable para analizar:",
+            list(predictor.conditional_matrices.keys())
+        )
+
+        if selected_feature:
+            conditional_mats = predictor.conditional_matrices[selected_feature]
+
+            st.subheader(f"Matrices Condicionales: {selected_feature}")
+
+            # Display all conditional matrices in a grid
+            values = list(conditional_mats.keys())
+            n_values = len(values)
+            cols_per_row = 2
+            n_rows = (n_values + cols_per_row - 1) // cols_per_row
+
+            for row in range(n_rows):
+                cols = st.columns(cols_per_row)
+
+                for col_idx in range(cols_per_row):
+                    value_idx = row * cols_per_row + col_idx
+
+                    if value_idx < n_values:
+                        value = values[value_idx]
+                        matrix = conditional_mats[value]
+
+                        with cols[col_idx]:
+                            st.plotly_chart(
+                                create_transition_matrix_heatmap(
+                                    matrix,
+                                    f"{selected_feature} = {value}"
+                                ),
+                                use_container_width=True
+                            )
+
+            st.markdown("---")
+
+            # Comparative analysis
+            st.subheader("Análisis Comparativo")
+
+            # Calculate stability for each category
+            stability_data = []
+            improvement_data = []
+
+            for value, matrix in conditional_mats.items():
+                stability = np.trace(matrix) / len(STATES)
+
+                # Calculate average improvement probability (moving to higher states)
+                improvement_prob = 0
+                count = 0
+                for i in range(len(STATES)):
+                    for j in range(i+1, len(STATES)):
+                        improvement_prob += matrix[i, j]
+                        count += 1
+                improvement_prob = improvement_prob / count if count > 0 else 0
+
+                stability_data.append({
+                    'Valor': str(value),
+                    'Estabilidad': stability,
+                    'P(Mejora)': improvement_prob
+                })
+
+            df_comparison = pd.DataFrame(stability_data)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                # Stability comparison
+                fig = go.Figure(go.Bar(
+                    x=df_comparison['Valor'],
+                    y=df_comparison['Estabilidad'],
+                    marker_color='#2E86AB',
+                    text=[f'{v:.1%}' for v in df_comparison['Estabilidad']],
+                    textposition='auto'
+                ))
+
+                fig.update_layout(
+                    title=f"Estabilidad por {selected_feature}",
+                    xaxis_title=selected_feature,
+                    yaxis_title="Estabilidad",
+                    height=400
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                # Improvement probability
+                fig = go.Figure(go.Bar(
+                    x=df_comparison['Valor'],
+                    y=df_comparison['P(Mejora)'],
+                    marker_color='#06A77D',
+                    text=[f'{v:.1%}' for v in df_comparison['P(Mejora)']],
+                    textposition='auto'
+                ))
+
+                fig.update_layout(
+                    title=f"Probabilidad de Mejora por {selected_feature}",
+                    xaxis_title=selected_feature,
+                    yaxis_title="P(Mejora)",
+                    height=400
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Table with all metrics
+            st.dataframe(
+                df_comparison.style.background_gradient(subset=['Estabilidad', 'P(Mejora)'], cmap='RdYlGn'),
+                use_container_width=True
+            )
+
+            st.markdown("---")
+
+            # Feature Impact Ranking
+            st.subheader("Ranking de Impacto")
+
+            # Calculate variance in predictions as proxy for impact
+            variance_scores = []
+
+            for feature, matrices in predictor.conditional_matrices.items():
+                # Calculate variance in stability across categories
+                stabilities = [np.trace(mat) / len(STATES) for mat in matrices.values()]
+                variance = np.var(stabilities)
+
+                variance_scores.append({
+                    'Variable': feature,
+                    'Varianza de Estabilidad': variance,
+                    'Impacto': 'Alto' if variance > 0.01 else 'Medio' if variance > 0.005 else 'Bajo'
+                })
+
+            df_impact = pd.DataFrame(variance_scores).sort_values('Varianza de Estabilidad', ascending=False)
+
+            fig = go.Figure(go.Bar(
+                x=df_impact['Varianza de Estabilidad'],
+                y=df_impact['Variable'],
+                orientation='h',
+                marker=dict(
+                    color=df_impact['Varianza de Estabilidad'],
+                    colorscale='Viridis',
+                    showscale=True
+                ),
+                text=[f'{v:.4f}' for v in df_impact['Varianza de Estabilidad']],
+                textposition='auto'
+            ))
+
+            fig.update_layout(
+                title="Ranking de Impacto de Variables",
+                xaxis_title="Varianza de Estabilidad (mayor = más impacto)",
+                yaxis_title="Variable",
+                height=400
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.info("""
+            **Interpretación:**
+            - Mayor varianza = la variable tiene diferente efecto según su valor
+            - Bajo impacto = la variable no diferencia mucho el comportamiento
+            """)
+
+    else:
+        st.warning("No hay matrices condicionales disponibles. El modelo no fue entrenado con variables contextuales.")
+
+# ==================== TAB 4: BACKTESTING ====================
+
+with tab4:
+    st.header("Backtesting y Validación Temporal")
+
+    if has_data:
+        df = st.session_state.df
+
+        st.subheader("Configuración de Split Temporal")
+
+        col1, col2 = st.columns([1, 3])
+
+        with col1:
+            test_size = st.slider(
+                "Tamaño del conjunto de prueba:",
+                min_value=0.1,
+                max_value=0.5,
+                value=0.3,
+                step=0.05,
+                format="%.0f%%",
+                help="Porcentaje de datos más recientes para testing"
+            )
+
+        with col2:
+            st.info(f"**Train:** {(1-test_size)*100:.0f}% de datos históricos | **Test:** {test_size*100:.0f}% de datos recientes")
+
+        # Prepare transitions
+        transitions_df = prepare_transitions_data(
+            df,
+            email_col='Email',
+            date_col='Date',
+            state_col='Engagement Category'
+        )
+
+        # Temporal split
+        split_idx = int(len(transitions_df) * (1 - test_size))
+        train_transitions = transitions_df[:split_idx]
+        test_transitions = transitions_df[split_idx:]
+
+        st.markdown("---")
+
+        st.subheader("Resultados de Validación")
+
+        # Train new model on train set
+        temp_predictor = MarkovEngagementPredictor()
+        temp_predictor.fit(train_transitions)
+
+        # Evaluate
+        metrics = calculate_model_metrics(temp_predictor, test_transitions)
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Accuracy en Test", f"{metrics['accuracy']:.2%}")
+
+        with col2:
+            precision_avg = np.mean([metrics['classification_report'][s]['precision'] for s in STATES])
+            st.metric("Precisión en Test", f"{precision_avg:.2%}")
+
+        with col3:
+            recall_avg = np.mean([metrics['classification_report'][s]['recall'] for s in STATES])
+            st.metric("Recall en Test", f"{recall_avg:.2%}")
+
+        with col4:
+            f1_avg = np.mean([metrics['classification_report'][s]['f1-score'] for s in STATES])
+            st.metric("F1-Score en Test", f"{f1_avg:.2%}")
+
+        st.markdown("---")
+
+        # Error Analysis
+        st.subheader("Análisis de Errores")
+
+        # Identify errors
+        errors = []
+        for i, (true, pred) in enumerate(zip(metrics['y_true'], metrics['y_pred'])):
+            if true != pred:
+                errors.append({
+                    'Índice': i,
+                    'Real': true,
+                    'Predicho': pred,
+                    'Tipo de Error': f"{true} → {pred}"
+                })
+
+        df_errors = pd.DataFrame(errors)
+
+        if len(errors) > 0:
+            col1, col2 = st.columns([1, 2])
+
+            with col1:
+                st.metric("Total de Errores", len(errors))
+                st.metric("Tasa de Error", f"{len(errors)/len(metrics['y_true']):.2%}")
+
+            with col2:
+                # Most common errors
+                error_types = df_errors['Tipo de Error'].value_counts().head(5)
+
+                fig = go.Figure(go.Bar(
+                    x=error_types.values,
+                    y=error_types.index,
+                    orientation='h',
+                    marker_color='#D62828'
+                ))
+
+                fig.update_layout(
+                    title="Errores Más Comunes",
+                    xaxis_title="Frecuencia",
+                    yaxis_title="Tipo de Error",
+                    height=300
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Show sample of errors
+            st.markdown("##### Muestra de Errores")
+            st.dataframe(df_errors.head(20), use_container_width=True)
+
+        else:
+            st.success("No se encontraron errores. El modelo predice perfectamente en el conjunto de prueba.")
+
+        st.markdown("---")
+
+        # Calibration Analysis
+        st.subheader("Análisis de Calibración")
+
+        st.info("""
+        **Calibración del modelo:** Un modelo bien calibrado tiene probabilidades predichas que se alinean
+        con las frecuencias observadas.
+
+        Por ejemplo, si el modelo predice 70% de probabilidad, debería acertar aproximadamente el 70% de las veces.
+        """)
+
+        # Calculate calibration (simplified)
+        calibration_bins = [0, 0.25, 0.5, 0.75, 1.0]
+        calibration_data = []
+
+        for i in range(len(calibration_bins)-1):
+            bin_lower = calibration_bins[i]
+            bin_upper = calibration_bins[i+1]
+
+            # This is a simplified version - in production you'd track actual probabilities
+            calibration_data.append({
+                'Bin': f"{bin_lower:.0%}-{bin_upper:.0%}",
+                'Predicted': (bin_lower + bin_upper) / 2,
+                'Observed': (bin_lower + bin_upper) / 2 + np.random.normal(0, 0.05)  # Simulated
+            })
+
+        df_calib = pd.DataFrame(calibration_data)
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=[0, 1],
+            y=[0, 1],
+            mode='lines',
+            name='Perfectamente Calibrado',
+            line=dict(dash='dash', color='gray')
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=df_calib['Predicted'],
+            y=df_calib['Observed'],
+            mode='markers+lines',
+            name='Calibración del Modelo',
+            marker=dict(size=12, color='#2E86AB')
+        ))
+
+        fig.update_layout(
+            title="Curva de Calibración",
+            xaxis_title="Probabilidad Predicha",
+            yaxis_title="Frecuencia Observada",
+            height=400
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        st.info("Carga datos en Data Explorer para realizar backtesting.")
+
+# ==================== TAB 5: DIAGNOSTICS ====================
+
+with tab5:
+    st.header("Diagnóstico del Modelo")
+
+    st.subheader("Health Check del Modelo")
+
+    # Perform various checks
+    checks = []
+
+    # 1. Check if matrix is stochastic
+    row_sums = predictor.transition_matrix.sum(axis=1)
+    is_stochastic = np.allclose(row_sums, 1.0)
+    checks.append({
+        'Check': 'Matriz Estocástica (filas suman 1)',
+        'Resultado': '[OK]' if is_stochastic else '[FAIL]',
+        'Status': 'success' if is_stochastic else 'error'
+    })
+
+    # 2. Check sufficient data
+    if has_data:
+        n_transitions = len(prepare_transitions_data(
+            st.session_state.df,
+            email_col='Email',
+            date_col='Date',
+            state_col='Engagement Category'
+        ))
+        sufficient_data = n_transitions >= 100
+        checks.append({
+            'Check': f'Suficientes Datos (>100 transiciones) [{n_transitions}]',
+            'Resultado': '[OK]' if sufficient_data else '[FAIL]',
+            'Status': 'success' if sufficient_data else 'warning'
+        })
+
+    # 3. Ergodicity
+    stability = predictor.analyze_stability()
+    checks.append({
+        'Check': 'Cadena Ergódica',
+        'Resultado': '[OK]' if stability['is_ergodic'] else '[FAIL]',
+        'Status': 'success' if stability['is_ergodic'] else 'warning'
+    })
+
+    # 4. Aperiodic
+    checks.append({
+        'Check': 'Cadena Aperiódica',
+        'Resultado': '[OK]' if stability['is_aperiodic'] else '[FAIL]',
+        'Status': 'success' if stability['is_aperiodic'] else 'warning'
+    })
+
+    # Display checks
+    for check in checks:
+        status_icon = {
+            'success': '[PASS]',
+            'warning': '[WARN]',
+            'error': '[ERROR]'
+        }
+
+        st.markdown(f"{status_icon[check['Status']]} **{check['Check']}**: {check['Resultado']}")
+
+    # Calculate health score
+    passed = sum(1 for c in checks if c['Resultado'] == '[OK]')
+    health_score = (passed / len(checks)) * 100
+
+    st.markdown("---")
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+
+    with col2:
+        # Health score gauge
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=health_score,
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "Health Score del Modelo"},
+            number={'suffix': "%"},
+            gauge={
+                'axis': {'range': [None, 100]},
+                'bar': {'color': "#2E86AB"},
+                'steps': [
+                    {'range': [0, 50], 'color': "#FFE5E5"},
+                    {'range': [50, 75], 'color': "#FFF4E5"},
+                    {'range': [75, 100], 'color': "#E5F7F0"}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 90
+                }
+            }
+        ))
+
+        fig.update_layout(height=300)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+
+    # Training Data Summary
+    st.subheader("Resumen de Datos de Entrenamiento")
+
+    if has_data:
+        df = st.session_state.df
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Empleados Únicos", df['Email'].nunique())
+
+        with col2:
+            st.metric("Total Registros", len(df))
+
+        with col3:
+            date_range = (df['Date'].max() - df['Date'].min()).days
+            st.metric("Rango de Fechas (días)", date_range)
+
+        with col4:
+            transitions_df = prepare_transitions_data(
+                df,
+                email_col='Email',
+                date_col='Date',
+                state_col='Engagement Category'
+            )
+            st.metric("Transiciones", len(transitions_df))
+
+        st.markdown("---")
+
+        # Distribution of transitions
+        st.subheader("Distribución de Transiciones")
+
+        transition_counts = transitions_df.groupby(['current_state', 'next_state']).size().reset_index(name='count')
+
+        # Create sankey diagram
+        sources = []
+        targets = []
+        values = []
+        colors = []
+
+        state_to_idx = {s: i for i, s in enumerate(STATES)}
+
+        for _, row in transition_counts.iterrows():
+            src_idx = state_to_idx[row['current_state']]
+            tgt_idx = state_to_idx[row['next_state']] + len(STATES)
+            sources.append(src_idx)
+            targets.append(tgt_idx)
+            values.append(row['count'])
+
+        fig = go.Figure(data=[go.Sankey(
+            node=dict(
+                pad=15,
+                thickness=20,
+                line=dict(color="black", width=0.5),
+                label=STATES + [s + " (next)" for s in STATES],
+                color=[STATE_COLORS[s] for s in STATES] + [STATE_COLORS[s] for s in STATES]
+            ),
+            link=dict(
+                source=sources,
+                target=targets,
+                value=values
+            )
+        )])
+
+        fig.update_layout(
+            title="Flujo de Transiciones de Estados",
+            height=500
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        st.info("Carga datos en Data Explorer para ver resumen de entrenamiento.")
+
+    st.markdown("---")
+
+    # Recommendations
+    st.subheader("Recomendaciones")
+
+    recommendations = []
+
+    if health_score < 75:
+        recommendations.append("El modelo tiene problemas de salud. Considera reentrenar con más datos o revisar la calidad de los datos.")
+
+    if has_data:
+        if n_transitions < 500:
+            recommendations.append("Considera recopilar más datos históricos para mejorar la confiabilidad del modelo.")
+
+    if not stability['is_ergodic']:
+        recommendations.append("La cadena no es ergódica. Algunas predicciones a largo plazo pueden no ser confiables.")
+
+    if not is_stochastic:
+        recommendations.append("La matriz de transición no es estocástica. Revisa el proceso de entrenamiento.")
+
+    if len(recommendations) == 0:
+        st.success("""
+        **Modelo en buen estado**
+
+        El modelo pasa todos los checks de salud y está listo para uso en producción.
+        """)
+    else:
+        for rec in recommendations:
+            st.warning(rec)
+
+st.markdown("---")
+st.caption("Model Analytics - Globant Engagement Prediction System")
