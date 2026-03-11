@@ -1,0 +1,610 @@
+# Streamlit Cloud Deployment Guide
+
+Step-by-step guide for deploying the Engagement Prediction Application to Streamlit Cloud.
+
+## Table of Contents
+
+1. [Prerequisites](#prerequisites)
+2. [Account Setup](#account-setup)
+3. [Repository Preparation](#repository-preparation)
+4. [Deployment Steps](#deployment-steps)
+5. [Configuration](#configuration)
+6. [Testing](#testing)
+7. [Maintenance](#maintenance)
+8. [Troubleshooting](#troubleshooting)
+
+---
+
+## Prerequisites
+
+### Required Accounts
+- GitHub account with your repository
+- Streamlit Cloud account (free tier available)
+
+### Repository Requirements
+- Public or private GitHub repository
+- All code committed and pushed
+- Required files present:
+  - `requirements.txt`
+  - `runtime.txt`
+  - `packages.txt`
+  - `.streamlit/config.toml`
+
+---
+
+## Account Setup
+
+### 1. Create Streamlit Cloud Account
+
+1. Go to [share.streamlit.io](https://share.streamlit.io)
+2. Click "Sign up" or "Continue with GitHub"
+3. Authorize Streamlit to access your GitHub account
+4. Complete account setup
+
+### 2. Verify GitHub Access
+
+1. In Streamlit Cloud dashboard, go to Settings
+2. Verify GitHub connection is active
+3. Grant access to your repositories
+4. If needed, request access to organization repos
+
+---
+
+## Repository Preparation
+
+### 1. Verify Required Files
+
+Ensure these files exist in your repository root:
+
+#### requirements.txt
+```text
+streamlit>=1.31.0
+pandas>=2.1.0
+numpy>=1.24.0
+plotly>=5.18.0
+scikit-learn>=1.3.0
+openpyxl>=3.1.2
+reportlab>=4.0.0
+fpdf2>=2.7.6
+...
+```
+
+#### runtime.txt
+```text
+python-3.10
+```
+
+#### packages.txt
+```text
+libgomp1
+```
+
+#### .streamlit/config.toml
+```toml
+[server]
+port = 8501
+enableCORS = false
+enableXsrfProtection = true
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#667eea"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+font = "sans serif"
+```
+
+### 2. Verify Application Structure
+
+Your repository should have this structure:
+```
+engagement-prediction-app/
+├── app/
+│   ├── main.py              # Main entry point
+│   └── pages/               # Streamlit pages
+├── src/                     # Source code
+├── data/
+│   └── raw/
+│       └── data_globant_cleaned.csv
+├── requirements.txt
+├── runtime.txt
+├── packages.txt
+└── .streamlit/
+    └── config.toml
+```
+
+### 3. Test Locally
+
+Before deploying, test the app locally:
+
+```bash
+# Activate virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run app
+streamlit run app/main.py
+```
+
+Verify:
+- App starts without errors
+- All pages load correctly
+- Data loads successfully
+- Predictions work
+- Visualizations render
+
+### 4. Commit and Push
+
+```bash
+git add .
+git commit -m "Prepare for Streamlit Cloud deployment"
+git push origin main
+```
+
+---
+
+## Deployment Steps
+
+### Step 1: Create New App
+
+1. Log in to [share.streamlit.io](https://share.streamlit.io)
+2. Click "New app" button
+3. You'll see the deployment form
+
+### Step 2: Configure Deployment
+
+Fill in the deployment form:
+
+**Repository**:
+- Select your GitHub repository
+- Example: `username/engagement-prediction-app`
+
+**Branch**:
+- Choose `main` (or your preferred branch)
+
+**Main file path**:
+- Enter: `app/main.py`
+
+**App URL** (optional):
+- Choose a custom URL subdomain
+- Example: `engagement-prediction` → `engagement-prediction.streamlit.app`
+- Or leave blank for auto-generated URL
+
+### Step 3: Advanced Settings (Optional)
+
+Click "Advanced settings" to configure:
+
+**Python version**:
+- Should auto-detect from `runtime.txt`
+- Verify it shows Python 3.10
+
+**Secrets**:
+- Add secrets if needed (see Configuration section)
+- Use TOML format
+
+### Step 4: Deploy
+
+1. Review all settings
+2. Click "Deploy!"
+3. Wait for build to complete
+
+**Build Process**:
+- Creates virtual environment
+- Installs system packages (from `packages.txt`)
+- Installs Python packages (from `requirements.txt`)
+- Starts Streamlit app
+
+**Typical build time**: 2-5 minutes
+
+### Step 5: Monitor Build
+
+Watch the build logs:
+- Check for errors in red
+- Verify all packages install successfully
+- Wait for "Your app is now deployed!" message
+
+---
+
+## Configuration
+
+### Secrets Management
+
+If your app needs secrets (API keys, credentials):
+
+1. In Streamlit Cloud, go to your app
+2. Click "⋮" menu → "Settings"
+3. Click "Secrets" in left sidebar
+4. Add secrets in TOML format:
+
+```toml
+# Example secrets
+[general]
+api_key = "your-api-key-here"
+
+[database]
+host = "your-db-host"
+port = 5432
+username = "user"
+password = "pass"
+```
+
+5. Click "Save"
+6. Restart app for secrets to take effect
+
+### Environment Variables
+
+Streamlit Cloud automatically sets:
+- `STREAMLIT_SERVER_HEADLESS=true`
+- `STREAMLIT_BROWSER_GATHER_USAGE_STATS=false`
+
+To access secrets in code:
+```python
+import streamlit as st
+
+# Access secrets
+api_key = st.secrets["general"]["api_key"]
+db_host = st.secrets["database"]["host"]
+```
+
+### Custom Configuration
+
+To override default config, modify `.streamlit/config.toml`:
+
+```toml
+[server]
+maxUploadSize = 200  # MB
+maxMessageSize = 200  # MB
+
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"
+```
+
+---
+
+## Testing
+
+### Post-Deployment Verification
+
+1. **Access Your App**:
+   - URL: `https://[your-app-name].streamlit.app`
+   - Should load within 5-10 seconds
+
+2. **Test All Pages**:
+   - Home: Verify welcome message
+   - Data Explorer: Check data loads
+   - Variable Selection: Test variable selection
+   - Prediction: Run a prediction
+   - Model Analytics: View analytics
+   - Documentation: Check docs display
+
+3. **Test Functionality**:
+   - File uploads (if applicable)
+   - Downloads (PDF, Excel)
+   - Interactive charts
+   - Session state persistence
+
+4. **Check Performance**:
+   - Page load times
+   - Interaction responsiveness
+   - Chart rendering speed
+
+### Common Test Scenarios
+
+```python
+# Test data loading
+✓ Data file loads without errors
+✓ Data displays in tables
+✓ Statistics calculate correctly
+
+# Test predictions
+✓ Single predictions work
+✓ Monte Carlo simulations complete
+✓ Results display correctly
+✓ Export functions work
+
+# Test visualizations
+✓ Charts render properly
+✓ Interactive features work
+✓ Plots are readable
+```
+
+---
+
+## Maintenance
+
+### Updating Your App
+
+Streamlit Cloud auto-deploys on GitHub push:
+
+1. Make changes locally
+2. Test changes
+3. Commit and push:
+```bash
+git add .
+git commit -m "Update: description of changes"
+git push origin main
+```
+4. Streamlit Cloud automatically redeploys
+5. Wait for build to complete
+6. Test deployed changes
+
+### Manual Reboot
+
+If app is unresponsive:
+
+1. Go to app in Streamlit Cloud
+2. Click "⋮" menu → "Reboot app"
+3. Wait for restart
+4. Test functionality
+
+### Viewing Logs
+
+To debug issues:
+
+1. Go to app in Streamlit Cloud
+2. Click "⋮" menu → "Logs"
+3. View real-time logs
+4. Look for errors or warnings
+
+### Monitoring Usage
+
+Track app metrics:
+
+1. Go to app dashboard
+2. View analytics:
+   - Number of viewers
+   - Active sessions
+   - Resource usage
+   - Errors
+
+### Updating Dependencies
+
+To update packages:
+
+1. Update `requirements.txt` locally:
+```bash
+pip list --outdated
+pip install --upgrade package-name
+pip freeze > requirements.txt
+```
+
+2. Test locally
+3. Commit and push
+4. Auto-redeploys with new packages
+
+---
+
+## Troubleshooting
+
+### Build Failures
+
+**Error: Package installation failed**
+
+Solution:
+1. Check package names in `requirements.txt`
+2. Verify package versions are compatible
+3. Check Streamlit Cloud's supported packages
+4. Review build logs for specific error
+
+**Error: Python version mismatch**
+
+Solution:
+1. Verify `runtime.txt` contains: `python-3.10`
+2. Ensure no conflicting Python version in requirements
+3. Check that packages support Python 3.10
+
+**Error: System package missing**
+
+Solution:
+1. Add required packages to `packages.txt`
+2. Common additions:
+```text
+libgomp1
+build-essential
+```
+
+### Runtime Errors
+
+**Error: Module not found**
+
+Solution:
+1. Add missing package to `requirements.txt`
+2. Ensure package name is correct
+3. Reboot app after updating
+
+**Error: File not found**
+
+Solution:
+1. Check file paths are relative to app root
+2. Verify files are committed to GitHub
+3. Check `.gitignore` isn't excluding needed files
+
+**Error: Out of memory**
+
+Solution:
+1. Optimize data loading (use chunks)
+2. Add caching with `@st.cache_data`
+3. Reduce data size
+4. Upgrade to Streamlit Cloud Pro
+
+### Performance Issues
+
+**App is slow**
+
+Solutions:
+1. Add caching:
+```python
+@st.cache_data
+def load_data():
+    return pd.read_csv("data.csv")
+```
+
+2. Optimize queries and computations
+3. Reduce data size
+4. Use pagination for large datasets
+
+**App times out**
+
+Solutions:
+1. Reduce initial load time
+2. Lazy load data
+3. Optimize imports
+4. Use background tasks
+
+### Access Issues
+
+**App not accessible**
+
+Solutions:
+1. Check app status in dashboard
+2. Verify deployment completed
+3. Check for errors in logs
+4. Try rebooting app
+
+**Secrets not working**
+
+Solutions:
+1. Verify TOML syntax in secrets
+2. Check secret key names match code
+3. Reboot app after adding secrets
+4. Don't use quotes around values in TOML
+
+---
+
+## Best Practices
+
+### Security
+
+1. **Never commit secrets**:
+   - Use Streamlit Cloud secrets management
+   - Add `.streamlit/secrets.toml` to `.gitignore`
+
+2. **Validate user inputs**:
+```python
+if uploaded_file:
+    if uploaded_file.size > 10_000_000:  # 10MB
+        st.error("File too large")
+        return
+```
+
+3. **Handle errors gracefully**:
+```python
+try:
+    data = load_data()
+except Exception as e:
+    st.error(f"Error loading data: {e}")
+    return
+```
+
+### Performance
+
+1. **Cache expensive operations**:
+```python
+@st.cache_data
+def expensive_computation(data):
+    # Your computation
+    return result
+```
+
+2. **Use session state efficiently**:
+```python
+if 'data' not in st.session_state:
+    st.session_state.data = load_data()
+```
+
+3. **Optimize data loading**:
+```python
+# Load only needed columns
+df = pd.read_csv("data.csv", usecols=['col1', 'col2'])
+```
+
+### User Experience
+
+1. **Show loading states**:
+```python
+with st.spinner("Loading data..."):
+    data = load_data()
+```
+
+2. **Provide feedback**:
+```python
+st.success("Prediction completed!")
+st.info("Tip: Try different parameters")
+st.warning("Large dataset may take time")
+st.error("Invalid input")
+```
+
+3. **Handle edge cases**:
+```python
+if data.empty:
+    st.warning("No data available")
+    return
+```
+
+---
+
+## Resources
+
+### Official Documentation
+- [Streamlit Docs](https://docs.streamlit.io)
+- [Streamlit Cloud Docs](https://docs.streamlit.io/streamlit-community-cloud)
+- [Deployment Tutorial](https://docs.streamlit.io/streamlit-community-cloud/get-started)
+
+### Community
+- [Streamlit Forum](https://discuss.streamlit.io)
+- [GitHub Issues](https://github.com/streamlit/streamlit/issues)
+- [Discord Community](https://discord.gg/streamlit)
+
+### Support
+- Email: support@streamlit.io
+- Documentation: docs.streamlit.io
+- Status Page: status.streamlit.io
+
+---
+
+## Checklist
+
+Before going live:
+
+- [ ] All tests pass locally
+- [ ] Code is committed and pushed to GitHub
+- [ ] Required files are present (requirements.txt, etc.)
+- [ ] Secrets are configured (if needed)
+- [ ] App deployed successfully
+- [ ] All pages load correctly
+- [ ] Functionality tested
+- [ ] Performance is acceptable
+- [ ] Error handling works
+- [ ] Documentation is updated
+- [ ] Team has access to app
+- [ ] Monitoring is set up
+
+After deployment:
+
+- [ ] Share app URL with stakeholders
+- [ ] Monitor logs for errors
+- [ ] Track usage metrics
+- [ ] Set up regular maintenance schedule
+- [ ] Document any issues and solutions
+
+---
+
+## Next Steps
+
+After successful deployment:
+
+1. **Set up monitoring**: Track errors and usage
+2. **Gather feedback**: From users
+3. **Plan updates**: Based on feedback
+4. **Optimize performance**: Based on metrics
+5. **Scale if needed**: Upgrade to Pro plan
+
+For general deployment information, see [DEPLOYMENT.md](DEPLOYMENT.md)
